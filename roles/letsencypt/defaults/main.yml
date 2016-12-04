@@ -1,0 +1,6 @@
+---
+
+gen_cert: False
+
+default_challenge_dir: ".well-known/acme-challenge"
+

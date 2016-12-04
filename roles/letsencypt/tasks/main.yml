@@ -1,0 +1,124 @@
+---
+
+- name: mkdir for site
+  file: dest=ssl/{{ inventory_hostname }}.crt state=directory
+  when: gen_cert
+  tags: 
+    - letsencrypt
+    - delegate
+  delegate_to: 127.0.0.1
+
+- name: link chain
+  file: src=../letsencrypt-chain.crt dest=ssl/{{ inventory_hostname }}.crt/z_chain.crt state=link
+  when: gen_cert
+  tags: 
+    - letsencrypt
+    - delegate
+  delegate_to: 127.0.0.1
+
+- name: generate openssl.cnf
+  template: src=openssl.cnf.j2 dest=ssl/{{ inventory_hostname }}.cnf
+  when: gen_cert
+  tags: 
+    - letsencrypt
+    - delegate
+  delegate_to: 127.0.0.1
+
+- name: gen key if not exists
+  command: openssl genrsa -out ssl/{{ inventory_hostname }}.key 4096
+  args:
+    creates: ssl/{{ inventory_hostname }}.key
+  when: gen_cert
+  tags: 
+    - letsencrypt
+    - delegate
+  delegate_to: 127.0.0.1
+
+- name: gen csr if not exists
+  command: openssl req -new -out ssl/{{ inventory_hostname }}.csr -key ssl/{{ inventory_hostname }}.key -config ssl/{{ inventory_hostname }}.cnf -subj "/C=PL/ST=Malopolska/L=Krakow/O=Company/OU=IT Department/CN={{ certaltnames.0 }}"
+  args: 
+    creates: ssl/{{ inventory_hostname }}.csr
+  when: gen_cert
+  tags: 
+    - letsencrypt
+    - delegate
+  delegate_to: 127.0.0.1
+
+- name: letsencrypt pass 1
+  letsencrypt: 
+    acme_directory: https://acme-v01.api.letsencrypt.org/directory
+    account_email: admin@wrota.net
+    account_key: ssl/account.key
+    csr: ssl/{{ inventory_hostname }}.csr
+    dest: ssl/{{ inventory_hostname }}.crt/{{ inventory_hostname }}.crt
+  register: challenge
+  when: gen_cert
+  tags: 
+    - letsencrypt
+    - delegate
+  delegate_to: 127.0.0.1
+
+- name: mkdir for challenge
+  file: path=/var/www/html/{{ default_challenge_dir }} state=directory mode=0755
+  when: challenge|changed
+  tags: 
+    - letsencrypt
+    - delegate
+  delegate_to: "{{ upload_files_to }}"
+
+- name: copy verification file to host
+  copy:
+    dest: /var/www/html/{{ item.value['http-01']['resource'] }}
+    content: "{{ item.value['http-01']['resource_value'] }}"
+  with_dict: "{{ challenge['challenge_data'] | default({}) }}"
+  when: challenge|changed
+  tags: 
+    - letsencrypt
+    - delegate
+  delegate_to: "{{ upload_files_to }}"
+
+- name: letsencrypt pass 2
+  letsencrypt:
+    acme_directory: https://acme-v01.api.letsencrypt.org/directory
+    account_email: admin@wrota.net
+    account_key: ssl/account.key
+    csr: ssl/{{ inventory_hostname }}.csr
+    dest: ssl/{{ inventory_hostname }}.crt/{{ inventory_hostname }}.crt
+    data: "{{ challenge }}"
+  when: challenge|changed
+  tags: 
+    - letsencrypt
+    - delegate
+  delegate_to: 127.0.0.1
+
+- name: rmdir for challenge files
+  file: path=/var/www/html/{{ default_challenge_dir }} state=absent
+  when: challenge|changed
+  tags: 
+    - letsencrypt
+    - delegate
+  delegate_to: "{{ upload_files_to }}"
+
+- name: upload key to host
+  copy: src=ssl/{{ item }} dest=/etc/nginx/ssl/{{ item }}
+  with_items:
+    - "{{ inventory_hostname }}.key"
+  notify: reload nginx
+  when: gen_cert
+  tags: 
+    - letsencrypt
+    - delegate
+  delegate_to: "{{ upload_files_to }}"
+
+- name: assemble crt to host
+  assemble: 
+    src: ssl/{{ inventory_hostname }}.crt
+    dest: /etc/nginx/ssl/{{ inventory_hostname }}.crt
+    remote_src: False
+  notify: reload nginx
+  when: gen_cert
+  tags: 
+    - letsencrypt
+    - delegate
+  delegate_to: "{{ upload_files_to }}"
+
